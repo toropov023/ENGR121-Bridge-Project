@@ -89,7 +89,8 @@ void loop() {
   //Check if speed of the motor should be changed
   checkMotorSpeed();
 
-
+  //Call the move motor function
+  moveMotor(presSensor);
 }
 
 //Return the proximity sensor distance in cm
@@ -132,7 +133,7 @@ void moveMotor(boolean presSensor){
     Serial.print("Moving ");
     Serial.print(forward ? "forward" : "backward");
     Serial.print(" with speed ");
-    Serial.println(sSpeed);
+    Serial.println(oldSpeed);
 
     //Switch the motor enable transiston on
     digitalWrite(MOTOR_TR, HIGH);
@@ -167,10 +168,10 @@ void loopTrafficLights(boolean change) {
   if(change && !lightAreChanging)
     lightAreChanging = true;
 
+  lightsTicks++; //Keep track of the time
+    
   //If the lights are in the yellow/red state
   if(lightAreChanging){
-    lightsTicks++; //Keep track of the time it was in this state
-
     //Has it been less than 3 seconds?
     if(lightsTicks <= 30){
       //Turn yellow LED on
@@ -182,9 +183,10 @@ void loopTrafficLights(boolean change) {
       lightAreChanging = false;  //Reset the yellow/red state variable
       lightsTicks = 0; //Reset the yellow/red state time
     }    
-  } else if(lighsTicks % 5 == 0){ //If the lights are not in the yellow/red state and time is every .5 second
+  } else if(lightsTicks >= 5){ //If the lights are not in the yellow/red state and time is every .5 second
     greenOn = !greenOn; //Toggle green LED state
     setLEDs(0, 0, greenOn); //Set the green LED on or off
+    lightsTicks = 0; //Reset time
   }
 }
 
