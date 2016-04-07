@@ -17,7 +17,6 @@
 #include "MCP23S17.h"
 
 const int NUM_OF_LIGHTS = 4;
-const int MAX_PATTERN_SIZE = 5;
 
 const int TIME_DELTA = 10;
 long time = 0;
@@ -37,6 +36,19 @@ NewPing sonarWalk(7, 6, 90);
 
 const int westSonarEnable = 13;
 const int eastSonarEnable = 14;
+
+int boatPresent = 0; //0 - no boat, 1 - at north end, 2 - at south end
+
+//0 - initial/reset
+//1 - waiting for boat
+//2 - checking the deck
+//3 - changing lights
+//4 - moving the bridge
+//5 - checking the boat leave
+//6 - closing the bridge
+//0 - reset
+int state = 0;
+const int numOfStates = 7;
 
 namespace TrafficLights {
   typedef struct {
@@ -61,7 +73,6 @@ namespace TrafficLights {
   }
 
   void lightPattern(Light &light){
-    Serial.println("LIGHT");
     for(int i = 0; i < 3; i++){
       if(light.onExpander){
         io.digitalWrite(light.pins[i], light.pattern[i]);
@@ -72,18 +83,15 @@ namespace TrafficLights {
   }
 
   void setPattern(Light &light, int pattern[]){
-    if(pattern[0] == 0){
-      light.ticking = false;
-      light.nextPattern = 0;
-      light.ticks = 0;
-
-      Serial.println("Ain't ticking");
-      return;
-    }
-
     light.ticks = pattern[0];
     light.nextPattern = pattern[1];
     light.ticking = true;
+
+    if(light.ticks == 0){
+      light.ticking = false;
+      light.nextPattern = 0;
+      light.ticks = 0;
+    }
 
     for(int i = 2; i < 5; i++){
       light.pattern[i-2] = pattern[i];
@@ -114,21 +122,25 @@ int patterns[][5] = {
   {500, 4, 0, 1, 0},
   {0, 0, 0, 0, 1},
 
-  //4 - Pedestrian green
+  //5 - Pedestrian green
   {0, 0, 1, 0, 0},
 
-  //5 - Pedestrian red
+  //6 - Pedestrian red
   {0, 0, 0, 1, 0},
 
-  //6 - Boat yellow
+  //7 - Boat yellow
   {0, 0, 1, 0, 0},
 
-  //7 - Boat blink yellow
-  {100, 8, 1, 0, 0},
-  {100, 7, 0, 1, 0},
+  //8 - Boat blink red
+  {100, 9, 0, 1, 0},
+  {100, 8, 0, 0, 0},
 
-  //9 - Boat red
-  {0, 0, 0, 1, 0}
+  //10 - Boat red
+  {0, 0, 0, 1, 0},
+
+  //11 - Pedestrian green blink
+  {50, 12, 1, 0, 0},
+  {50, 11, 0, 0, 0},
 };
 
 void setLights(int id, int pattern){
@@ -149,12 +161,6 @@ void setup(){
   lights[2] = TrafficLights::create({2, {9, 10}, true});
   lights[3] = TrafficLights::create({2, {11, 12}, true});
 
-  //Initial lights' patterns
-  setLights(0, 1);
-  setLights(1, 4);
-  setLights(2, 7);
-  setLights(3, 7);
-
   //set up deck sensors
   io.pinMode(3, HIGH); //Output
   io.pinMode(2, LOW); //Input
@@ -169,29 +175,14 @@ void setup(){
 int motorDirection = 1;
 int motorSpeed = 5;
 
-void loop_DERP(){
-    SPI.end();
-    digitalWrite(13, HIGH);
-    motor.setSpeed(10);
-
-    delay(100);
-    motor.step(512);
-
-    digitalWrite(13, LOW);
-    delay(100);
-    motor.step(-512);
-}
-
-int readings[5];
-const int precision = 2;
-bool checkBoat(NewPing sonar){
+int readings[5] = {0};
+bool checkBoat(NewPing sonar, int precision, int matchAmount){
   for(int i=1; i<5; i++){
     readings[i - 1] = readings[i];
   }
 
   int uS = sonar.ping_median(5);
   int dis = sonar.convert_cm(uS);
-  Serial.println(dis);
   if(dis == 0){
     return false;
   }
@@ -221,6 +212,21 @@ bool checkBoat(NewPing sonar){
   return false;
 }
 
+int boatLeaveTicks = 0;
+bool checkBoatLeave(NewPing sonar){
+  if(!checkBoat(sonar, 10, 1)){
+    boatLeaveTicks++;
+  } else {
+    boatLeaveTicks = 0;
+  }
+
+  if(boatLeaveTicks < 300){
+    return false;
+  }
+
+  return true;
+}
+
 int freeDeckTicks = 0;
 bool checkDeck(){
   io.digitalWrite(westSonarEnable, HIGH);
@@ -228,8 +234,8 @@ bool checkDeck(){
 
   int uS = sonarWalk.ping();
   int dis = sonarWalk.convert_cm(uS);
-  Serial.print("West: ");
-  Serial.println(dis);
+  // Serial.print("West: ");
+  // Serial.println(dis);
 
   //
   // io.digitalWrite(westSonarEnable, LOW);
@@ -243,6 +249,7 @@ bool checkDeck(){
   return false;
 }
 
+int stateTicks[] = { 0 };
 void loop(){
   //Loop through traffic lights
   SPI.begin();
@@ -264,12 +271,104 @@ void loop(){
   // Serial.println(closeSensor);
 
   SPI.end();
-
   delay(TIME_DELTA);
 
-  //Find the boat
-  // checkBoat(sonarBoatSouth);
-  checkDeck();
+
+  Serial.print("State: ");
+  Serial.println(state);
+  stateTicks[state]++;
+  switch(state){
+    case 1:
+      //Find the boat
+      if(checkBoat(sonarBoatSouth, 2, 5)){
+        boatPresent = 2;
+
+        setLights(3, 8);
+        state = 2;
+      } else if(checkBoat(sonarBoatNorth, 2, 5)){
+        boatPresent = 1;
+
+        setLights(2, 8);
+        state = 2;
+      } else {
+        break;
+      }
+
+      break;
+
+    case 2:
+      setLights(1, 11);
+      setLights(0, 3);
+      state = 3;
+
+      break;
+
+    case 3:
+      if(stateTicks[3] == 500){
+        setLights(1, 6);
+      }
+
+      if(stateTicks[3] > 800 && checkDeck()){
+        state = 4;
+      }
+
+      break;
+
+    case 4:
+      if(openSensor || stateTicks[4] >= 6000){
+        state = 5;
+        setLights((boatPresent == 1 ? 2 : 3), 7);
+      } else {
+        //TODO move
+      }
+
+      break;
+
+    case 5:
+      if(stateTicks[5] > 1000){
+        if(boatPresent == 2){
+          if(checkBoatLeave(sonarBoatNorth)){
+            state = 6;
+            setLights(3, 10);
+          }
+        } else {
+          if(checkBoatLeave(sonarBoatSouth)){
+            state = 6;
+            setLights(2, 10);
+          }
+        }
+      }
+
+      break;
+
+    case 6:
+      if(checkBoatLeave(boatPresent == 1 ? sonarBoatSouth : sonarBoatNorth)){
+        //TODO move
+      }
+
+      if(closeSensor){
+        state = 0;
+      }
+
+      break;
+
+    default:
+      freeDeckTicks = 0;
+      boatPresent = 0;
+      boatLeaveTicks = 0;
+      time = 0;
+      memset(stateTicks, 0, numOfStates);
+
+      //Initial lights' patterns
+      setLights(0, 1);
+      setLights(1, 5);
+      setLights(2, 10);
+      setLights(3, 10);
+
+      state = 1;
+  }
+
+
 
   // Serial.println(checkBoat(false));
 
