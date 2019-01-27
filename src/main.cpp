@@ -18,7 +18,8 @@
 
 const int NUM_OF_LIGHTS = 4;
 
-const int TIME_DELTA = 10;
+const int TIME_DELTA = 100;
+int delta = 0;
 long time = 0;
 
 MCP io(0, 10);
@@ -27,11 +28,14 @@ const int motorEnab = 13;
 
 Stepper motor(512, 12, 11, 8, 9);
 
-bool closeSensor;
-bool openSensor;
+int motorDirection = 1;
+int motorSpeed = 3;
 
-NewPing sonarBoatNorth(5, 4, 50);
-NewPing sonarBoatSouth(3, 2, 40);
+const int closedPin = A4;
+const int openPin = A5;
+
+NewPing sonarBoatNorth(3, 2, 30);
+NewPing sonarBoatSouth(5, 4, 30);
 NewPing sonarWalk(7, 6, 90);
 
 const int westSonarEnable = 13;
@@ -115,11 +119,11 @@ int patterns[][5] = {
   {0,   0, 0, 0, 0},
 
   //1 - Traffic normal
-  {200, 2, 1, 0, 0},
-  {50,  1, 0, 0, 0},
+  {20, 2, 1, 0, 0},
+  {5,  1, 0, 0, 0},
 
   //3 - Traffic to red
-  {500, 4, 0, 1, 0},
+  {50, 4, 0, 1, 0},
   {0, 0, 0, 0, 1},
 
   //5 - Pedestrian green
@@ -132,15 +136,15 @@ int patterns[][5] = {
   {0, 0, 1, 0, 0},
 
   //8 - Boat blink red
-  {100, 9, 0, 1, 0},
-  {100, 8, 0, 0, 0},
+  {10, 9, 0, 1, 0},
+  {10, 8, 0, 0, 0},
 
   //10 - Boat red
   {0, 0, 0, 1, 0},
 
-  //11 - Pedestrian green blink
-  {50, 12, 1, 0, 0},
-  {50, 11, 0, 0, 0},
+  //11 - Pedestrian RED blink
+  {5, 12, 0, 1, 0},
+  {5, 11, 0, 0, 0},
 };
 
 void setLights(int id, int pattern){
@@ -152,6 +156,10 @@ void setLights(int id, int pattern){
 void setup(){
   Serial.begin(9600);
   pinMode(motorEnab, OUTPUT);
+
+  pinMode(A3, OUTPUT);
+  pinMode(A4, INPUT);
+  pinMode(A5, INPUT);
 
   //Set up IO Expander
   io.begin();
@@ -172,55 +180,30 @@ void setup(){
   io.pinMode(eastSonarEnable, HIGH);
 }
 
-int motorDirection = 1;
-int motorSpeed = 5;
-
-int readings[5] = {0};
-bool checkBoat(NewPing sonar, int precision, int matchAmount){
-  for(int i=1; i<5; i++){
-    readings[i - 1] = readings[i];
-  }
-
+bool checkSonar(NewPing sonar){
   int uS = sonar.ping_median(5);
   int dis = sonar.convert_cm(uS);
-  if(dis == 0){
-    return false;
-  }
-  readings[4] = dis;
-
-  //Calculate values
-  int total = 0;
-  for(int i=0; i<5; i++){
-    if(readings[i] == 0){
-      return false;
-    }
-    total += readings[i];
-  }
-
-  int avg = total / 5;
-  int match = 0;
-  for(int i=0; i<5; i++){
-    if(abs(readings[i] - avg) <= precision){
-      match++;
-    }
-  }
-
-  if(match == 5){
-    return true;
-  }
-
-  return false;
+  // Serial.println(dis);
+  // return false;
+  return dis != 0;
 }
 
 int boatLeaveTicks = 0;
+bool boatPassed = false;
 bool checkBoatLeave(NewPing sonar){
-  if(!checkBoat(sonar, 10, 1)){
-    boatLeaveTicks++;
-  } else {
+  if(!boatPassed){
+    if(checkSonar(sonar)){
+      boatPassed = true;
+    } else {
+      return false;
+    }
+  } else if(checkSonar(sonar)){
     boatLeaveTicks = 0;
+    return false;
   }
 
-  if(boatLeaveTicks < 300){
+  boatLeaveTicks++;
+  if(boatLeaveTicks < 15){
     return false;
   }
 
@@ -229,50 +212,75 @@ bool checkBoatLeave(NewPing sonar){
 
 int freeDeckTicks = 0;
 bool checkDeck(){
-  io.digitalWrite(westSonarEnable, HIGH);
-  io.digitalWrite(eastSonarEnable, LOW);
-
-  int uS = sonarWalk.ping();
-  int dis = sonarWalk.convert_cm(uS);
-  // Serial.print("West: ");
-  // Serial.println(dis);
-
-  //
   // io.digitalWrite(westSonarEnable, LOW);
   // io.digitalWrite(eastSonarEnable, HIGH);
   //
-  // uS = sonarWalk.ping();
-  // dis = sonarWalk.convert_cm(uS);
-  // Serial.print("East: ");
-  // Serial.println(dis);
+  // if(checkSonar(sonarWalk)){
+  //   freeDeckTicks = 0;
+  //   return false;
+  // }
+  //
+  // delay(10);
 
-  return false;
-}
+  io.digitalWrite(westSonarEnable, HIGH);
+  io.digitalWrite(eastSonarEnable, LOW);
 
-int stateTicks[] = { 0 };
-void loop(){
-  //Loop through traffic lights
-  SPI.begin();
-  for(int i = 0; i < NUM_OF_LIGHTS; i++){
-    TrafficLights::Light light = lights[i];
-    if(light.ticking){
-      if(light.ticks <= 0){
-         TrafficLights::setPattern(light, patterns[light.nextPattern]);
-      }
-
-      light.ticks--;
-      lights[i] = light;
-    }
+  if(checkSonar(sonarWalk)){
+    freeDeckTicks = 0;
+    return false;
   }
 
-  //Get sensor readings
-  closeSensor = io.digitalRead(2);
-  openSensor = io.digitalRead(1);
-  // Serial.println(closeSensor);
+  freeDeckTicks++;
+  return freeDeckTicks >= 15;
+}
 
-  SPI.end();
+bool spiEnabled = true;
+void setSPI(bool state){
+  spiEnabled = state;
+  if(state){
+    SPI.begin();
+  } else {
+    SPI.end();
+  }
+}
+
+int stateTicks[10] = { 0 };
+void loop_FAKE(){
+  delay(100);
+  // io.digitalWrite(westSonarEnable, HIGH);
+  io.digitalWrite(eastSonarEnable, HIGH);
+
+  int uS = sonarWalk.ping_median(20);
+  int dis = sonarWalk.convert_cm(uS);
+
+  Serial.println(dis);
+  // delay(1000);
+  // io.digitalWrite(westSonarEnable, LOW);
+}
+
+long timing = 0;
+const long maxTime = 950;
+void loop(){
+  //Loop through traffic lights
+  if(spiEnabled){
+    SPI.begin();
+    for(int i = 0; i < NUM_OF_LIGHTS; i++){
+      TrafficLights::Light light = lights[i];
+      if(light.ticking){
+        if(light.ticks <= 0){
+           TrafficLights::setPattern(light, patterns[light.nextPattern]);
+        }
+
+        light.ticks--;
+        lights[i] = light;
+      }
+    }
+
+    // Serial.println(closeSensor);
+    SPI.end();
+  }
+
   delay(TIME_DELTA);
-
 
   Serial.print("State: ");
   Serial.println(state);
@@ -280,12 +288,12 @@ void loop(){
   switch(state){
     case 1:
       //Find the boat
-      if(checkBoat(sonarBoatSouth, 2, 5)){
+      if(checkSonar(sonarBoatSouth)){
         boatPresent = 2;
 
         setLights(3, 8);
         state = 2;
-      } else if(checkBoat(sonarBoatNorth, 2, 5)){
+      } else if(checkSonar(sonarBoatNorth)){
         boatPresent = 1;
 
         setLights(2, 8);
@@ -304,28 +312,47 @@ void loop(){
       break;
 
     case 3:
-      if(stateTicks[3] == 500){
-        setLights(1, 6);
+      if(stateTicks[3] > 80){
+        if(checkDeck()){
+          state = 4;
+
+          break;
+        }
       }
 
-      if(stateTicks[3] > 800 && checkDeck()){
-        state = 4;
+      if(stateTicks[3] == 50){
+        setLights(1, 6);
       }
 
       break;
 
     case 4:
-      if(openSensor || stateTicks[4] >= 6000){
-        state = 5;
-        setLights((boatPresent == 1 ? 2 : 3), 7);
-      } else {
-        //TODO move
+      motor.setSpeed(motorSpeed);
+      SPI.end();
+      digitalWrite(motorEnab, HIGH);
+
+      while(true){
+        if(timing >= maxTime || analogRead(openPin) > 600){
+          SPI.begin();
+          setLights((boatPresent == 1 ? 2 : 3), 7);
+
+          digitalWrite(motorEnab, LOW);
+
+          state = 5;
+          timing = 0;
+          return;
+        }
+        SPI.end();
+        delay(1);
+        motor.step(-1);
+        timing++;
       }
 
       break;
 
     case 5:
-      if(stateTicks[5] > 1000){
+      SPI.begin();
+      if(stateTicks[5] > 50){
         if(boatPresent == 2){
           if(checkBoatLeave(sonarBoatNorth)){
             state = 6;
@@ -342,22 +369,30 @@ void loop(){
       break;
 
     case 6:
-      if(checkBoatLeave(boatPresent == 1 ? sonarBoatSouth : sonarBoatNorth)){
-        //TODO move
-      }
-
-      if(closeSensor){
-        state = 0;
+      motor.setSpeed(motorSpeed);
+      SPI.end();
+      digitalWrite(motorEnab, HIGH);
+      while(true){
+        if(timing >= maxTime || analogRead(closedPin) > 600){
+          state = 0;
+          return;
+        }
+        SPI.end();
+        delay(1);
+        motor.step(1);
+        timing++;
       }
 
       break;
 
     default:
+      setSPI(true);
       freeDeckTicks = 0;
       boatPresent = 0;
       boatLeaveTicks = 0;
       time = 0;
       memset(stateTicks, 0, numOfStates);
+      timing = 0;
 
       //Initial lights' patterns
       setLights(0, 1);
@@ -367,27 +402,6 @@ void loop(){
 
       state = 1;
   }
-
-
-
-  // Serial.println(checkBoat(false));
-
-  // motor.setSpeed(motorSpeed);
-  // if(motorDirection != 0){
-  //   motor.step(motorDirection);
-  // }
-  //
-  // if(time % 3000 == 0){
-  //   digitalWrite(motorEnab, HIGH);
-  //   if(motorDirection == 0){
-  //     motorDirection = 1;
-  //   }
-  //   motorDirection *= -1;
-  // }
-  // if(time % 6000 == 0){
-  //   motorDirection = 0;
-  //   digitalWrite(motorEnab, LOW);
-  // }
 
   time += TIME_DELTA;
 }
